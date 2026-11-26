@@ -158,22 +158,43 @@ rsh "set -e; cd '$NEW'
   ./ffmpeg -hide_banner -version >/dev/null; ./ffmpeg -hide_banner -version | head -1
   ./aplay --version" || { rsh "rm -rf '$NEW'" || true; die "the downloaded programs do not run on this robot (nothing was changed)"; }
 
+# The previous version is kept in $DIR/.old (and its sound settings in /etc/asound.conf.robot-radyo-prev) until the
+# new one has passed the sound test and has started. If either fails, rollback puts everything back as it was.
 msg "Replacing the running version (if any)"
 rsh "PATH=/sbin:/usr/sbin:/bin:/usr/bin; set -e
   [ -f /etc/init/S12robotradyo ] && /etc/init/S12robotradyo stop >/dev/null 2>&1 || true
+  rm -rf '$DIR/.old'; mkdir -p '$DIR/.old/web'
   cd '$NEW'
-  for f in node ffmpeg aplay amixer cacert.pem; do mv -f \"\$f\" '$DIR/'; done
-  for f in server.mjs panel.js i18n.js run.sh; do mv -f \"\$f\" '$DIR/web/'; done
+  for f in node ffmpeg aplay amixer cacert.pem; do [ -e '$DIR/'\"\$f\" ] && mv -f '$DIR/'\"\$f\" '$DIR/.old/'; mv -f \"\$f\" '$DIR/'; done
+  for f in server.mjs panel.js i18n.js run.sh; do [ -e '$DIR/web/'\"\$f\" ] && mv -f '$DIR/web/'\"\$f\" '$DIR/.old/web/'; mv -f \"\$f\" '$DIR/web/'; done
   cd /; rmdir '$NEW'"
 echo "$PORT" > "$WORK/port"; push "$WORK/port" "$DIR/web/port"
 
+# Undo this run: previous sound settings and, for an update, the previous version and its service.
+# On a first install there is no previous version: the sound settings are restored and our boot script removed.
+rollback() {
+  rsh "PATH=/sbin:/usr/sbin:/bin:/usr/bin
+    if [ -f /etc/asound.conf.robot-radyo-prev ]; then mv -f /etc/asound.conf.robot-radyo-prev /etc/asound.conf; else rm -f /etc/asound.conf; fi
+    if [ -e '$DIR/.old/node' ]; then
+      for f in node ffmpeg aplay amixer cacert.pem; do [ -e '$DIR/.old/'\"\$f\" ] && mv -f '$DIR/.old/'\"\$f\" '$DIR/'; done
+      for f in server.mjs panel.js i18n.js run.sh; do [ -e '$DIR/.old/web/'\"\$f\" ] && mv -f '$DIR/.old/web/'\"\$f\" '$DIR/web/'; done
+      rm -rf '$DIR/.old'
+      [ -f /etc/init/S12robotradyo ] && /etc/init/S12robotradyo start >/dev/null 2>&1
+    else
+      rm -rf '$DIR/.old'
+      if grep -q 'DIR=\"$DIR\"' /etc/init/S12robotradyo 2>/dev/null; then /etc/init/S12robotradyo stop >/dev/null 2>&1; rm -f /etc/init/S12robotradyo; fi
+    fi
+    true" || true
+}
+
 msg "Sharing the sound card with the robot (/etc/asound.conf) and enabling start at boot"
-rsh "if [ -f /etc/asound.conf ] && ! grep -q 'Robot Radyo' /etc/asound.conf; then cp /etc/asound.conf /etc/asound.conf.robot-radyo-backup; fi"
+rsh "if [ -f /etc/asound.conf ] && ! grep -q 'Robot Radyo' /etc/asound.conf; then cp /etc/asound.conf /etc/asound.conf.robot-radyo-backup; fi
+  if [ -f /etc/asound.conf ]; then cp /etc/asound.conf /etc/asound.conf.robot-radyo-prev; else rm -f /etc/asound.conf.robot-radyo-prev; fi"
 push "$HERE/robot/system/asound.conf" /etc/asound.conf
-# 0.1 s of silence through the shared device: if that fails, put the previous sound settings back and stop here
+# 0.1 s of silence through the shared device: if that fails, undo this run and stop here
 if ! rsh "head -c 4410 /dev/zero | '$DIR/aplay' -q -D default -t raw -f S16_LE -r 22050 -c 1"; then
-  rsh "if [ -f /etc/asound.conf.robot-radyo-backup ]; then cp /etc/asound.conf.robot-radyo-backup /etc/asound.conf; else rm -f /etc/asound.conf; fi"
-  die "the shared sound setup does not work on this robot; the previous sound settings were restored"
+  rollback
+  die "the shared sound setup does not work on this robot; the previous sound settings (and the previous version, if any) were restored"
 fi
 sed "s#@DIR@#$DIR#g" "$HERE/robot/system/S12robotradyo" > "$WORK/S12robotradyo"
 push "$WORK/S12robotradyo" /etc/init/S12robotradyo
@@ -185,7 +206,12 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
   sleep 2
   if rsh "wget -q -O - http://127.0.0.1:$PORT/robot-radyo/api/radyolar >/dev/null 2>&1 || curl -fs http://127.0.0.1:$PORT/robot-radyo/api/radyolar >/dev/null 2>&1"; then OK=1; break; fi
 done
-[ "$OK" = 1 ] || die "the server did not start; see /tmp/robot-radyo.log on the robot"
+if [ "$OK" != 1 ]; then
+  rsh "PATH=/sbin:/usr/sbin:/bin:/usr/bin; /etc/init/S12robotradyo stop >/dev/null 2>&1" || true
+  rollback
+  die "the new version did not start (see /tmp/robot-radyo.log on the robot); the previous state was restored"
+fi
+rsh "rm -rf '$DIR/.old' /etc/asound.conf.robot-radyo-prev"
 
 HOST="${ROBOT#*@}"
 msg "Done! Open http://$HOST:$PORT and log in with your Valetudo user name and password."

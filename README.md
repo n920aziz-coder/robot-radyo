@@ -37,7 +37,7 @@
   - genre groups (pop, rock, oldies, chill, folk and local music, jazz and classical, news and sports, religious);
   - a few well-known international jazz, classical and chill stations.
 
-  Countries with only a few stations are topped up with stations in the same language. Every station is test-played silently in the background, and a broken one is replaced from the same group.
+  Countries with only a few stations are topped up with stations in the same language. Every station is test-played silently in the background. A broken station is replaced from the same group; if there is no replacement, it stays in the list marked ⚠. Nothing is changed while the internet is down.
 - **Works with the robot's own voice.** The robot and the radio share the sound card. When the robot speaks, the radio is turned down (about −30 dB) and fades back afterwards.
 - **Follows cleaning (optional).**
   - The radio can start when you start a cleaning.

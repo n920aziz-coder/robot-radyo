@@ -345,7 +345,7 @@
       for (const s of favs) { const g = groupName(s); if (!groups.has(g)) groups.set(g, []); groups.get(g).push(s); }
       for (const [g, items] of groups) {
         const og = document.createElement('optgroup'); og.label = g;
-        for (const s of items) { const o = document.createElement('option'); o.value = s.id; o.textContent = s.ad; og.appendChild(o); }
+        for (const s of items) { const o = document.createElement('option'); o.value = s.id; o.textContent = (s.calismiyor ? '⚠ ' : '') + s.ad; og.appendChild(o); }
         sel.appendChild(og);
       }
       const want = r && r.caliyor && r.onizleme ? '__onizleme' : (r && r.istasyon) || keep;

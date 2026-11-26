@@ -21,7 +21,7 @@ const AMIXER = path.join(BIN, 'amixer');
 const RATE = 22050;
 const DUCK_LEVEL = 15;           // robot konuşurken "Radyo" kanalı (%), yaklaşık -30 dB
 const RAMP = [35, 60, 80, 100];  // konuşma bitince yavaşça geri açılma
-const VERSION = '1.0.0';
+const VERSION = '1.0.1';
 const RB_UA = `RobotRadyo/${VERSION} (Valetudo radio panel)`;
 const LOG_FILE = process.env.LOG_FILE || '/tmp/robot-radyo.log'; // /tmp bellekte durur: boyutu sınırlı tutulur
 const RSS_LIMIT_MB = 100;        // olağan kullanım ~45 MB; bunu aşarsa sunucu kendini yeniden başlatır
@@ -303,11 +303,17 @@ function probe(rawUrl) {
     c.on('error', () => { clearTimeout(t); resolve(false); });
   });
 }
+// İnternete (radyo dizinine) ulaşılabiliyor mu: bağlantı yokken hiçbir radyo "bozuk" sayılmaz
+async function online() {
+  try { await rb('/json/stats'); return true; } catch { return false; }
+}
 let checking = false;
+let validateRetry = null;
 async function validateLoop() {
   if (checking) return;
   checking = true;
-  let ok = 0, replaced = 0, removed = 0;
+  clearTimeout(validateRetry); validateRetry = null;
+  let ok = 0, replaced = 0, kept = 0, offline = false;
   try {
     for (;;) {
       const fav = favorites.find((f) => f.kontrol === 'bekliyor');
@@ -317,19 +323,42 @@ async function validateLoop() {
         const fresh = await rbFresh(fav.uuid);
         if (fresh && fresh !== fav.url) { fav.url = fresh; good = await probe(fresh); }
       }
+      // Çalmadıysa önce bağlantıya bak: internet yoksa sorun istasyonda değil; hiçbir şeyi değiştirme, sonra yeniden dene
+      if (!good && !(await online())) { offline = true; break; }
       const i = favorites.indexOf(fav);
       if (good) { fav.kontrol = 'tamam'; ok++; }
       else if (i >= 0) {
         const rep = nextReserve(fav.grup);
-        log('hazır liste: çalışmayan radyo', rep ? `değiştirildi: ${fav.ad} -> ${rep.ad}` : `çıkarıldı: ${fav.ad}`);
-        if (rep) { favorites.splice(i, 1, rep); replaced++; } else { favorites.splice(i, 1); removed++; }
+        if (rep) {
+          log('hazır liste: çalışmayan radyo değiştirildi:', fav.ad, '->', rep.ad);
+          favorites.splice(i, 1, rep);
+          if (settings.istasyon === fav.id) { settings.istasyon = rep.id; saveSettings(); } // seçili radyo da yenisi olsun
+          replaced++;
+        } else {
+          // Yerine konacak aday yok (ör. sunucu bu arada yeniden başladı): silme, listede kalsın; kullanıcı karar verir
+          log('hazır liste: çalışmayan radyo listede bırakıldı (yerine konacak aday yok):', fav.ad);
+          fav.kontrol = 'calismiyor';
+          kept++;
+        }
       }
       saveFavorites();
     }
   } finally {
     checking = false;
-    if (ok + replaced + removed) log(`hazır liste denendi: ${ok} çalışıyor, ${replaced} değiştirildi, ${removed} çıkarıldı`);
+    if (ok + replaced + kept) log(`hazır liste denendi: ${ok} çalışıyor, ${replaced} değiştirildi, ${kept} çalışmıyor (listede bırakıldı)`);
+    if (offline) {
+      log('hazır liste: internete ulaşılamıyor; hiçbir radyo değiştirilmedi, 10 dakika sonra yeniden denenecek');
+      validateRetry = setTimeout(() => validateLoop().catch(() => {}), 10 * 60e3);
+    }
   }
+}
+// Seçili radyo listede yoksa (silindi ya da değiştirildi) listedeki ilk çalışan radyoya geç
+function selectedStation() {
+  if (!findFavorite(settings.istasyon)) {
+    settings.istasyon = (favorites.find((f) => f.kontrol !== 'calismiyor') || favorites[0])?.id ?? null;
+    saveSettings();
+  }
+  return settings.istasyon;
 }
 
 // ---------- ayarlar ----------
@@ -413,14 +442,19 @@ function startRadio(target, withCleaning = false) {
   const st = typeof target === 'string' ? findFavorite(target) : target;
   if (!st || (!st.url && !st.uuid)) throw httpError(400, 'Bilinmeyen radyo', 'yok');
   return serial(async () => {
+    // Adresi henüz bilinmeyen radyo (aramadan önizleme): çalan radyoya dokunmadan ÖNCE adresi bul. Bulunamazsa çalan
+    // radyo (varsa) çalmaya devam eder, durum tutarlı kalır ve kullanıcıya hata döner.
+    let clicked = false;
+    if (!st.url && st.uuid) { st.url = await rbResolve(st.uuid); clicked = true; }
+    if (!st.url) {
+      if (!radio.playing) { radio.error = 'Yayın adresi bulunamadı'; radio.errorKod = 'baglanti'; }
+      throw httpError(502, 'Yayın adresi bulunamadı', 'baglanti');
+    }
     clearTimeout(radio.timer); radio.timer = null;
     Object.assign(radio, { playing: true, station: st, title: '', error: '', errorKod: '', since: Date.now(), withCleaning, restartTimes: [], healed: false });
     duck.errorStop = false;
     if (findFavorite(st.id)) { settings.istasyon = st.id; saveSettings(); }
     saveRuntime();
-    let clicked = false;
-    if (!st.url && st.uuid) { st.url = await rbResolve(st.uuid); clicked = true; }
-    if (!st.url) { radio.playing = false; radio.error = 'Yayın adresi bulunamadı'; radio.errorKod = 'baglanti'; saveRuntime(); return; }
     await spawnPipe();
     log('radyo açıldı:', st.ad, withCleaning ? '(temizlikle)' : '', findFavorite(st.id) ? '' : '(önizleme)');
     if (st.uuid && !clicked) rbResolve(st.uuid); // radio-browser'a "dinlendi" bildirimi (bir kez)
@@ -707,7 +741,8 @@ async function pollRobot() {
       const planned = await scheduledCleaning(auth);
       if (planned && !settings.zamanli) { log('zamanlanmış temizlik başladı: radyo kendiliğinden açılmadı'); continue; }
       log('temizlik başladı' + (planned ? ' (zamanlanmış)' : ''));
-      startRadio(settings.istasyon, true).catch(() => {});
+      const failed = (e) => log('temizlikte radyo açılamadı:', e.message);
+      try { startRadio(selectedStation(), true).catch(failed); } catch (e) { failed(e); }
     } else if (ev === 'hata') {
       log('robot hata verdi' + (radio.playing ? ': uyarısını söyledikten sonra radyo kapanacak' : ''));
       if (radio.playing && !duck.errorStop) { duck.errorStop = true; duck.errorSince = Date.now(); }
@@ -894,7 +929,8 @@ async function handleRadyo(req, res, p) {
 
   if (req.method === 'GET' && p === '/robot-radyo/onizleme') return send(res, 200, PREVIEW);
   if (req.method === 'GET' && p === '/robot-radyo/api/radyolar') {
-    return send(res, 200, favorites.map(({ id, ad, grup, grupKey, uuid }) => ({ id, ad, grup: grup || null, grupKey: grupKey || null, dizinde: Boolean(uuid) })));
+    return send(res, 200, favorites.map(({ id, ad, grup, grupKey, uuid, kontrol }) => ({
+      id, ad, grup: grup || null, grupKey: grupKey || null, dizinde: Boolean(uuid), calismiyor: kontrol === 'calismiyor' })));
   }
   // Radyo dizininde arama
   if (req.method === 'GET' && p === '/robot-radyo/api/ara') {
@@ -923,7 +959,7 @@ async function handleRadyo(req, res, p) {
       if (fav) await startRadio(fav.id, keep);
       else await startRadio({ id: b.uuid, uuid: b.uuid, ad: String(b.ad || 'Radyo').slice(0, 80), url: null }, keep); // önizleme
     } else {
-      await startRadio(b.istasyon || settings.istasyon, keep);
+      await startRadio(b.istasyon || selectedStation(), keep);
     }
     return send(res, 200, state());
   }

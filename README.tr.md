@@ -37,7 +37,7 @@
   - tür grupları (pop, rock, nostalji, sakin, halk ve yerel, caz ve klasik, haber ve spor, dini);
   - tanınmış birkaç yabancı caz, klasik ve sakin müzik radyosu.
 
-  Az radyosu olan ülkelerde liste aynı dildeki radyolarla tamamlanır. Her radyo arka planda sessizce denenir; çalışmayanın yerine aynı gruptan başkası konur.
+  Az radyosu olan ülkelerde liste aynı dildeki radyolarla tamamlanır. Her radyo arka planda sessizce denenir. Çalışmayanın yerine aynı gruptan başkası konur; yerine konacak radyo yoksa ⚠ işaretiyle listede kalır. İnternet yokken hiçbir şey değiştirilmez.
 - **Robotun kendi sesiyle uyumlu.** Robot ve radyo ses kartını paylaşır. Robot konuşurken radyo kısılır (yaklaşık −30 dB), sonra yavaşça eski sesine döner.
 - **Temizliğe göre çalışır (isteğe bağlı).**
   - Siz temizliği başlatınca radyo kendiliğinden açılabilir.

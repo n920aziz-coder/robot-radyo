@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.1 (2026-11-26)
+
+Fixes for four findings from an external review.
+
+- **Installer.** If the sound test or the start check fails during an update, the previous version, its sound settings and its service are now restored. Before, the radio could stay disabled.
+- **Ready-made list.**
+  - While the internet or the station directory can't be reached, stations are no longer replaced or removed; the check is retried later.
+  - A broken station without a replacement now stays in the list, marked ⚠, instead of being deleted.
+- **Previews.** If a preview's stream address can't be found, the station that is playing keeps playing and an error is shown. Before, the old stream kept playing while the panel showed the radio as off.
+- **Selected station.** If the selected station was replaced or removed, the automatic start (and Play) now uses the first working station instead of silently doing nothing.
+
 ## 1.0.0 (2026-11-26)
 
 First public release.

@@ -39,7 +39,7 @@ fi
 ssh "${SSH_OPTS[@]}" "$ROBOT" "
   PATH=/sbin:/usr/sbin:/bin:/usr/bin
   [ -f /etc/init/S12robotradyo ] && /etc/init/S12robotradyo stop >/dev/null 2>&1
-  rm -f /etc/init/S12robotradyo /var/run/robot-radyo.pid /tmp/robot-radyo-calan.json /tmp/robot-radyo.log /tmp/robot-radyo.log.1
+  rm -f /etc/init/S12robotradyo /var/run/robot-radyo.pid /tmp/robot-radyo-calan.json /tmp/robot-radyo.log /tmp/robot-radyo.log.1 /etc/asound.conf.robot-radyo-prev
   if [ -f /etc/asound.conf.robot-radyo-backup ]; then mv /etc/asound.conf.robot-radyo-backup /etc/asound.conf
   elif grep -q 'Robot Radyo' /etc/asound.conf 2>/dev/null; then rm -f /etc/asound.conf; fi
   # delete the folder only if it really is a Robot Radyo installation
