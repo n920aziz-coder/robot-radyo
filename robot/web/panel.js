@@ -39,7 +39,7 @@
     }
     setLang(pickLang());
     const fmt = (s, n) => String(s).replace('{n}', n);
-    const errText = (e) => (e.status === 401 ? T.login : (e.kod && ('e_' + e.kod) in D ? D['e_' + e.kod] : e.message));
+    const errText = (e) => (e.status === 401 ? T.login : e.status === 503 ? T.unreachable : (e.kod && ('e_' + e.kod) in D ? D['e_' + e.kod] : e.message));
 
     const GENRES = ['', 'pop', 'rock', 'jazz', 'classical', 'blues', 'news', 'oldies', 'chillout', 'dance', 'electronic', 'folk', '80s', '90s', 'lounge', 'religious', 'sports'];
     // Hazır listedeki grupların metin anahtarları: grup adları panelin diline göre gösterilir
@@ -118,6 +118,14 @@
   @keyframes eq2 { 0%, 100% { height: 5px; } 50% { height: 22px; } }
   .nt { min-width: 0; } .n1 { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .n2 { font-size: 13px; color: #94a3b8; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .n2.err { -webkit-line-clamp: 4; color: #fde68a; }
+  .panel.busy .mainplay { opacity: .75; cursor: progress; }
+  .grip:focus-visible, button:focus-visible, .sw:focus-visible { outline: 2px solid #c084fc; outline-offset: 2px; }
+  .row.sub { margin-top: 10px; padding-top: 0; border-top: 0; }
+  .row.sub span { font-size: 13px; color: #cbd5e1; padding-inline-start: 26px; }
+  .row.sub.off { opacity: .45; }
+  .sw.small { width: 40px; height: 24px; } .sw.small::after { width: 18px; height: 18px; } .sw.small.on::after { transform: translateX(16px); }
+  @media (prefers-reduced-motion: reduce) { .eq i, .art .eq i { animation: none !important; } .panel, .handle, .backdrop { transition: none !important; } }
   label.f { display: block; font-size: 12px; color: #94a3b8; margin: 2px 2px 6px; text-transform: uppercase; letter-spacing: .06em; }
   select, input[type=text], input[type=url] { width: 100%; font: inherit; font-size: 15px; color: #f1f5f9; background: rgba(255, 255, 255, .08);
     border: 1px solid rgba(255, 255, 255, .12); border-radius: 12px; padding: 10px 12px; outline: none; min-width: 0; }
@@ -183,7 +191,7 @@
 </style>
 
 <div class="handle">
-  <div class="grip"><div class="eq"><i></i><i></i><i></i></div></div>
+  <div class="grip" role="button" tabindex="0" aria-expanded="false"><div class="eq"><i></i><i></i><i></i></div></div>
   <button class="hb up">${ICON.plus}</button>
   <button class="hb down">${ICON.minus}</button>
   <button class="hb mute">${ICON.speaker}</button>
@@ -214,6 +222,7 @@
       <span class="vv">60%</span>
     </div>
     <div class="row"><span class="t-auto"></span><button class="sw auto" role="switch" aria-checked="false"></button></div>
+    <div class="row sub"><span class="t-autosched"></span><button class="sw small sched" role="switch" aria-checked="false"></button></div>
     <p class="hint t-hint"></p>
     <div class="langrow">${ICON.globe}<select class="lang"></select></div>
     <div class="note m-note"></div>
@@ -253,6 +262,7 @@
     const countrySel = $('.country'), qInput = $('.q'), genresBox = $('.genres'), results = $('.results');
     const welcome = $('.welcome'), wCountry = $('.wcountry'), wMake = $('.wmake'), stationBox = $('.stationbox'), chk = $('.chk');
     const langSel = $('.lang'), mNote = $('.m-note'), aNote = $('.a-note'), rAdd = $('.radd'), rRep = $('.rrep');
+    const schedSw = $('.sched'), schedRow = $('.row.sub');
 
     let st = null, favs = [], isOpen = false, busy = false, volTouched = 0, pollTimer = null, delArmed = null, repArmed = false;
     let countries = null, countriesLoading = null, genre = '', searchSeq = 0, building = false;
@@ -261,14 +271,14 @@
     function applyTexts() {
       panel.dir = LANG === 'ar' ? 'rtl' : 'ltr';
       panel.lang = LANG;
-      const txt = { '.t-radio': T.radio, '.t-station': T.station, '.t-add': T.addStations, '.t-auto': T.auto, '.t-hint': T.hint,
+      const txt = { '.t-radio': T.radio, '.t-station': T.station, '.t-add': T.addStations, '.t-auto': T.auto, '.t-autosched': T.autoSched, '.t-hint': T.hint,
         '.t-addtitle': T.addTitle, '.t-custom': T.customTitle, '.t-src': T.source, '.cadd': T.customAdd, '.t-wtitle': T.welcomeTitle,
         '.t-wtext': T.welcomeText, '.t-ready': T.readyList, '.t-readytext': T.readyListText, '.radd': T.addToMine };
       for (const [s, v] of Object.entries(txt)) $(s).textContent = v;
-      if (!$('.t-loading') || !results.querySelector('.res')) { /* arama sonuçları dil değişince yeniden yüklenir */ }
       $('.cname').placeholder = T.customName; $('.curl').placeholder = T.customUrl; qInput.placeholder = T.searchName;
       $('.up').title = T.volUp; $('.down').title = T.volDown; $('.mute').title = T.mute; $('.pmute').title = T.mute; delBtn.title = T.remove;
-      grip.title = T.handle; panel.setAttribute('aria-label', T.radio); range.setAttribute('aria-label', T.vol);
+      grip.title = T.handle; grip.setAttribute('aria-label', T.handle); panel.setAttribute('aria-label', T.radio); range.setAttribute('aria-label', T.vol);
+      autoSw.setAttribute('aria-label', T.auto); schedSw.setAttribute('aria-label', T.autoSched);
       $$('.x').forEach((b) => (b.title = T.close)); $('.back').title = T.back;
       langSel.setAttribute('aria-label', T.language); langSel.title = T.language;
       if (!building) wMake.textContent = T.makeList;
@@ -353,6 +363,7 @@
       $('.n2').textContent = playing
         ? (r.kisik ? T.ducked : (st.sessiz ? T.muted : (r.baslik || (r.temizlikle ? T.cleaning : T.live))))
         : (err || T.pick);
+      $('.n2').classList.toggle('err', !playing && Boolean(err));
       playBtn.textContent = playing ? T.stop : T.play;
       playBtn.classList.toggle('stop', playing);
       // İlk açılış: henüz liste yoksa ülke seçip hazır liste oluşturma kartı
@@ -368,6 +379,10 @@
       if (Date.now() - volTouched > 1500) { range.value = st.ses; vv.textContent = st.ses + '%'; }
       for (const b of [$('.mute'), $('.pmute')]) { b.innerHTML = st.sessiz ? ICON.mute : ICON.speaker; b.classList.toggle('on', st.sessiz); }
       autoSw.classList.toggle('on', st.otomatik); autoSw.setAttribute('aria-checked', String(st.otomatik));
+      const sched = Boolean(st.otomatikZamanli);
+      schedSw.classList.toggle('on', sched); schedSw.setAttribute('aria-checked', String(sched));
+      schedRow.hidden = st.otomatikZamanli === undefined; // eski sunucuda bu ayar yok
+      schedRow.classList.toggle('off', !st.otomatik); schedSw.disabled = !st.otomatik;
       $$('.res').forEach((row) => row.classList.toggle('cur', playing && r.uuid === row.dataset.uuid));
     }
 
@@ -388,9 +403,9 @@
     document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
 
     async function act(fn, noteEl = mNote) {
-      if (busy) return; busy = true;
+      if (busy) return; busy = true; panel.classList.add('busy');
       try { const d = await fn(); if (d && d.radyo) { st = d; render(); } } catch (e) { note(noteEl, '⚠️ ' + errText(e)); }
-      finally { busy = false; }
+      finally { busy = false; panel.classList.remove('busy'); }
     }
 
     // ---- ses ----
@@ -419,17 +434,24 @@
     };
 
     // ---- radyo ----
-    playBtn.onclick = () => act(() => {
-      if (st && st.radyo.caliyor) return api('/radyo/dur', {});
-      if (sel.value === '__onizleme' && st && st.radyo.uuid) return api('/radyo/cal', { uuid: st.radyo.uuid, ad: st.radyo.istasyonAd });
-      return sel.value ? api('/radyo/cal', { istasyon: sel.value }) : null;
-    });
+    playBtn.onclick = () => {
+      // Durdur her zaman çalışır (yavaş bir başlatma sürerken bile)
+      if (st && st.radyo.caliyor) {
+        api('/radyo/dur', {}).then((d) => { st = d; render(); }).catch((e) => note(mNote, '⚠️ ' + errText(e)));
+        return;
+      }
+      act(() => {
+        if (sel.value === '__onizleme' && st && st.radyo.uuid) return api('/radyo/cal', { uuid: st.radyo.uuid, ad: st.radyo.istasyonAd });
+        return sel.value ? api('/radyo/cal', { istasyon: sel.value }) : null;
+      });
+    };
     sel.onchange = () => {
       delBtn.disabled = !favs.some((f) => f.id === sel.value);
       disarmDelete();
       if (st && st.radyo.caliyor && sel.value && sel.value !== '__onizleme') act(() => api('/radyo/cal', { istasyon: sel.value }));
     };
     autoSw.onclick = () => act(() => api('/otomatik', { acik: !(st && st.otomatik) }));
+    schedSw.onclick = () => { if (st && st.otomatik) act(() => api('/otomatik', { zamanli: !st.otomatikZamanli })); };
     langSel.onchange = () => { ls.set('lang', langSel.value); setLang(langSel.value); applyTexts(); if (!vAdd.hidden) search(); };
 
     function disarmDelete() { delArmed = null; delBtn.classList.remove('confirm'); delBtn.innerHTML = ICON.trash; }
@@ -579,16 +601,22 @@
       backdrop.style.opacity = String(p);
     }
     function clearInline() { panel.style.transition = ''; panel.style.transform = ''; backdrop.style.transition = ''; backdrop.style.opacity = ''; }
-    function open() {
+    function open(fromKeyboard = false) {
       clearInline(); isOpen = true;
       panel.classList.add('open'); backdrop.classList.add('show'); handle.classList.add('hidden');
+      grip.setAttribute('aria-expanded', 'true');
       refresh(); schedule();
+      // Klavyeyle açıldıysa odağı panele taşı (dokunmatikte klavye açılmasın diye yalnızca bu durumda)
+      if (fromKeyboard) setTimeout(() => { try { (vAdd.hidden ? (playBtn.hidden ? wMake : playBtn) : $('.back')).focus(); } catch { /* */ } }, 300);
     }
     function close() {
       clearInline(); isOpen = false; disarmDelete(); disarmReplace();
       panel.classList.remove('open'); backdrop.classList.remove('show'); handle.classList.remove('hidden');
+      grip.setAttribute('aria-expanded', 'false');
       schedule();
     }
+    // Klavyeyle açma: tutamaç odaktayken Enter ya da boşluk
+    grip.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(true); } });
     backdrop.onclick = close;
     $$('.x').forEach((b) => (b.onclick = close));
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && isOpen) close(); });

@@ -1,23 +1,35 @@
 #!/bin/sh
 # Robot Radyo - started at boot by /etc/init/rcS (Roborock gen1/gen2 firmware).
 # Installed by install.sh; @DIR@ is replaced with the installation directory.
-DIR=@DIR@
+DIR="@DIR@"
 PID=/var/run/robot-radyo.pid
+
+start() {
+    start-stop-daemon -S -b -q -m -p "$PID" -x /bin/sh -- "$DIR/web/run.sh"
+}
+stop() {
+    [ -f "$PID" ] || return 0
+    P=$(cat "$PID" 2>/dev/null)
+    start-stop-daemon -K -q -p "$PID"
+    # wait until the runner (and the server it started) has really exited, at most ~8 s
+    i=0
+    while [ -n "$P" ] && kill -0 "$P" 2>/dev/null && [ $i -lt 8 ]; do sleep 1; i=$((i + 1)); done
+    rm -f "$PID"
+}
 
 case "$1" in
     start)
         echo "starting robot-radyo"
-        start-stop-daemon -S -b -q -m -p $PID -x /bin/sh -- $DIR/web/run.sh
+        start
         ;;
     stop)
         echo "stopping robot-radyo"
-        start-stop-daemon -K -q -p $PID
-        rm -f $PID
+        stop
         ;;
     restart)
-        $0 stop
-        sleep 2
-        $0 start
+        echo "restarting robot-radyo"
+        stop
+        start
         ;;
     *)
         echo "$0 <start|stop|restart>"

@@ -2,7 +2,7 @@
 # Robot Radyo installer.
 # Run this on a computer (Linux, macOS, WSL or Git Bash on Windows) that can SSH into your Valetudo robot as root.
 #
-#   ./install.sh [options] <robot-ip-or-host>
+#   bash install.sh [options] <robot-ip-or-host>
 #
 # Options:
 #   -i, --key FILE   SSH private key for the robot
@@ -22,8 +22,11 @@ ROBOT=""
 # Pinned downloads (override with environment variables if a source moves).
 NODE_URL="${NODE_URL:-https://github.com/yao-pkg/pkg-fetch/releases/download/v3.6/node-v22.23.5-linuxstatic-armv7}"
 NODE_SHA256="${NODE_SHA256:-fa33235bb93c20c48289daee04fc83a1adfe6c4475dbca3d8426ba9800d77b37}"
-FFMPEG_URL="${FFMPEG_URL:-https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-armhf-static.tar.xz}"
-FFMPEG_SHA256="${FFMPEG_SHA256:-}"   # empty: verified with the .md5 published next to the file
+# ffmpeg 7.0.2 (the tested build). johnvansickle.com moves a release to old-releases/ when a newer one comes out,
+# so both places are tried; only a file with exactly this checksum is accepted.
+FFMPEG_VERSION="${FFMPEG_VERSION:-7.0.2}"
+FFMPEG_SHA256="${FFMPEG_SHA256:-7d41f558cb1f3395b313f8ceabed78b3731c79a0962abf405ebb5cd393e93991}"
+FFMPEG_URL="${FFMPEG_URL:-https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-armhf-static.tar.xz https://johnvansickle.com/ffmpeg/old-releases/ffmpeg-${FFMPEG_VERSION}-armhf-static.tar.xz}"
 ALSA_DEB_URL="${ALSA_DEB_URL:-http://ports.ubuntu.com/ubuntu-ports/pool/main/a/alsa-utils/alsa-utils_1.0.27.2-1ubuntu2_armhf.deb}"
 ALSA_DEB_SHA256="${ALSA_DEB_SHA256:-7295f889d89d2d38455e1f21f46d219553fd5c4b37939b088cf301bf25230fd1}"
 CACERT_URL="${CACERT_URL:-https://curl.se/ca/cacert.pem}"
@@ -31,12 +34,13 @@ CACERT_URL="${CACERT_URL:-https://curl.se/ca/cacert.pem}"
 msg() { printf '\033[1;35m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; }
+needval() { [ $# -ge 2 ] && [ -n "$2" ] || die "$1 needs a value"; }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    -i|--key) KEY="$2"; shift 2 ;;
-    --dir) DIR="$2"; shift 2 ;;
-    --port) PORT="$2"; shift 2 ;;
+    -i|--key) needval "$@"; KEY="$2"; shift 2 ;;
+    --dir) needval "$@"; DIR="$2"; shift 2 ;;
+    --port) needval "$@"; PORT="$2"; shift 2 ;;
     --reboot) REBOOT=1; shift ;;
     --dry-run) DRY=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -46,7 +50,9 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$ROBOT" ] || { usage; exit 1; }
 case "$ROBOT" in *@*) ;; *) ROBOT="root@$ROBOT" ;; esac
-case "$DIR" in /mnt/data/?*) ;; *) die "--dir must be under /mnt/data (it survives firmware updates)" ;; esac
+# a plain folder under /mnt/data (survives firmware updates); no "..", spaces or special characters
+[[ "$DIR" =~ ^/mnt/data/[A-Za-z0-9._/-]+$ && "$DIR" != *..* ]] || die "--dir must be a plain path under /mnt/data"
+DIR="${DIR%/}"
 [[ "$PORT" =~ ^[0-9]+$ ]] && [ "$PORT" -ne 80 ] && [ "$PORT" -lt 65536 ] || die "invalid --port (80 is used by Valetudo)"
 
 SSH_OPTS=(-o BatchMode=yes -o ConnectTimeout=10)
@@ -57,7 +63,6 @@ push() { rsh "cat > '$2'" < "$1"; }
 need() { command -v "$1" >/dev/null 2>&1 || die "'$1' is required on this computer"; }
 need curl; need ssh; need tar
 sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum < "$1" | cut -d' ' -f1; else shasum -a 256 < "$1" | cut -d' ' -f1; fi; }
-md5of() { if command -v md5sum >/dev/null 2>&1; then md5sum < "$1" | cut -d' ' -f1; else md5 -q "$1"; fi; }
 command -v sha256sum >/dev/null 2>&1 || command -v shasum >/dev/null 2>&1 || die "sha256sum or shasum is required"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -71,7 +76,7 @@ INFO=$(rsh 'echo "arch=$(uname -m)"
   pidof RoboController >/dev/null 2>&1 && echo roborock=yes
   pidof valetudo >/dev/null 2>&1 && echo valetudo=yes
   [ -e /usr/lib/arm-linux-gnueabihf/libasound.so.2 ] && echo alsa=yes
-  echo "free=$(df -k /mnt/data | tail -1 | awk "{print \$4}")"') || die "cannot connect to $ROBOT over SSH"
+  echo "free=$(df -kP /mnt/data | tail -1 | awk "{print \$4}")"') || die "cannot connect to $ROBOT over SSH (see Requirements in the README)"
 grep -q 'arch=armv7' <<<"$INFO" || die "unsupported robot CPU (armv7l needed): $(grep arch <<<"$INFO")"
 for k in rcs roborock valetudo alsa; do
   grep -q "$k=yes" <<<"$INFO" || die "this version supports Valetudo on Roborock gen1/gen2 (Xiaomi Vacuum, Roborock S5). Missing: $k"
@@ -85,14 +90,13 @@ dl() { curl -fL --retry 3 --connect-timeout 20 -s -S -o "$2" "$1" || die "downlo
 msg "Downloading Node.js (static, armv7)"
 dl "$NODE_URL" "$WORK/node"
 [ "$(sha256 "$WORK/node")" = "$NODE_SHA256" ] || die "Node.js checksum mismatch"
-msg "Downloading ffmpeg (static, armhf)"
-dl "$FFMPEG_URL" "$WORK/ffmpeg.tar.xz"
-if [ -n "$FFMPEG_SHA256" ]; then
-  [ "$(sha256 "$WORK/ffmpeg.tar.xz")" = "$FFMPEG_SHA256" ] || die "ffmpeg checksum mismatch"
-else
-  dl "$FFMPEG_URL.md5" "$WORK/ffmpeg.md5"
-  [ "$(md5of "$WORK/ffmpeg.tar.xz")" = "$(cut -d' ' -f1 < "$WORK/ffmpeg.md5")" ] || die "ffmpeg checksum mismatch"
-fi
+msg "Downloading ffmpeg $FFMPEG_VERSION (static, armhf)"
+FF_OK=0
+for u in $FFMPEG_URL; do
+  curl -fL --retry 2 --connect-timeout 20 -s -o "$WORK/ffmpeg.tar.xz" "$u" 2>/dev/null || continue
+  [ "$(sha256 "$WORK/ffmpeg.tar.xz")" = "$FFMPEG_SHA256" ] && { FF_OK=1; break; }
+done
+[ "$FF_OK" = 1 ] || die "could not download ffmpeg $FFMPEG_VERSION with the expected checksum (set FFMPEG_URL and FFMPEG_SHA256 to use another build)"
 msg "Downloading alsa-utils (aplay, amixer) from the Ubuntu 14.04 archive"
 dl "$ALSA_DEB_URL" "$WORK/alsa.deb"
 [ "$(sha256 "$WORK/alsa.deb")" = "$ALSA_DEB_SHA256" ] || die "alsa-utils checksum mismatch"
@@ -135,24 +139,42 @@ if [ "$DRY" = 1 ]; then
 fi
 
 # ---------- 4. install ----------
-msg "Installing to $ROBOT:$DIR"
-rsh "mkdir -p '$DIR/web'; [ -f /etc/init/S12robotradyo ] && PATH=/sbin:/usr/sbin:/bin:/usr/bin /etc/init/S12robotradyo stop >/dev/null 2>&1; true"
-push "$WORK/node" "$DIR/node"
-push "$FFMPEG_BIN" "$DIR/ffmpeg"
-push "$WORK/alsa/usr/bin/aplay" "$DIR/aplay"
-push "$WORK/alsa/usr/bin/amixer" "$DIR/amixer"
-push "$WORK/cacert.pem" "$DIR/cacert.pem"
-for f in server.mjs panel.js i18n.js run.sh; do push "$HERE/robot/web/$f" "$DIR/web/$f"; done
-echo "$PORT" > "$WORK/port"; push "$WORK/port" "$DIR/web/port"
-rsh "chmod 755 '$DIR/node' '$DIR/ffmpeg' '$DIR/aplay' '$DIR/amixer' '$DIR/web/run.sh'"
+# Everything goes to $DIR/.new first and is checked there; only then is the running version stopped and replaced
+# (a failed or interrupted install leaves a working installation untouched). Favourites and settings are kept.
+msg "Copying to $ROBOT:$DIR/.new"
+NEW="$DIR/.new"
+rsh "rm -rf '$NEW'; mkdir -p '$NEW' '$DIR/web'"
+push "$WORK/node" "$NEW/node"
+push "$FFMPEG_BIN" "$NEW/ffmpeg"
+push "$WORK/alsa/usr/bin/aplay" "$NEW/aplay"
+push "$WORK/alsa/usr/bin/amixer" "$NEW/amixer"
+push "$WORK/cacert.pem" "$NEW/cacert.pem"
+for f in server.mjs panel.js i18n.js run.sh; do push "$HERE/robot/web/$f" "$NEW/$f"; done
+rsh "chmod 755 '$NEW/node' '$NEW/ffmpeg' '$NEW/aplay' '$NEW/amixer' '$NEW/run.sh'; chmod 644 '$NEW/cacert.pem' '$NEW/server.mjs' '$NEW/panel.js' '$NEW/i18n.js'"
 
 msg "Checking the programs on the robot"
-rsh "echo 'console.log(\"node \" + process.version)' > /tmp/rr-v.mjs && '$DIR/node' /tmp/rr-v.mjs; rm -f /tmp/rr-v.mjs
-  '$DIR/ffmpeg' -hide_banner -version | head -1; '$DIR/aplay' --version" || die "the downloaded programs do not run on this robot"
+rsh "set -e; cd '$NEW'
+  echo 'console.log(\"node \" + process.version)' > /tmp/rr-v.mjs; ./node /tmp/rr-v.mjs; rm -f /tmp/rr-v.mjs
+  ./ffmpeg -hide_banner -version >/dev/null; ./ffmpeg -hide_banner -version | head -1
+  ./aplay --version" || { rsh "rm -rf '$NEW'" || true; die "the downloaded programs do not run on this robot (nothing was changed)"; }
+
+msg "Replacing the running version (if any)"
+rsh "PATH=/sbin:/usr/sbin:/bin:/usr/bin; set -e
+  [ -f /etc/init/S12robotradyo ] && /etc/init/S12robotradyo stop >/dev/null 2>&1 || true
+  cd '$NEW'
+  for f in node ffmpeg aplay amixer cacert.pem; do mv -f \"\$f\" '$DIR/'; done
+  for f in server.mjs panel.js i18n.js run.sh; do mv -f \"\$f\" '$DIR/web/'; done
+  cd /; rmdir '$NEW'"
+echo "$PORT" > "$WORK/port"; push "$WORK/port" "$DIR/web/port"
 
 msg "Sharing the sound card with the robot (/etc/asound.conf) and enabling start at boot"
 rsh "if [ -f /etc/asound.conf ] && ! grep -q 'Robot Radyo' /etc/asound.conf; then cp /etc/asound.conf /etc/asound.conf.robot-radyo-backup; fi"
 push "$HERE/robot/system/asound.conf" /etc/asound.conf
+# 0.1 s of silence through the shared device: if that fails, put the previous sound settings back and stop here
+if ! rsh "head -c 4410 /dev/zero | '$DIR/aplay' -q -D default -t raw -f S16_LE -r 22050 -c 1"; then
+  rsh "if [ -f /etc/asound.conf.robot-radyo-backup ]; then cp /etc/asound.conf.robot-radyo-backup /etc/asound.conf; else rm -f /etc/asound.conf; fi"
+  die "the shared sound setup does not work on this robot; the previous sound settings were restored"
+fi
 sed "s#@DIR@#$DIR#g" "$HERE/robot/system/S12robotradyo" > "$WORK/S12robotradyo"
 push "$WORK/S12robotradyo" /etc/init/S12robotradyo
 rsh "chmod 755 /etc/init/S12robotradyo; PATH=/sbin:/usr/sbin:/bin:/usr/bin /etc/init/S12robotradyo start >/dev/null"
@@ -172,6 +194,6 @@ if [ "$REBOOT" = 1 ]; then
   msg "Rebooting the robot (about 1 minute)"
   rsh "/sbin/reboot" || true
 else
-  echo "    Reboot the robot once (e.g. ./install.sh --reboot, or 'reboot' over SSH) so that its own voice"
+  echo "    Reboot the robot once (e.g. bash install.sh --reboot, or /sbin/reboot over SSH) so that its own voice"
   echo "    prompts can play while the radio is on. Until then they are silent while the radio plays."
 fi

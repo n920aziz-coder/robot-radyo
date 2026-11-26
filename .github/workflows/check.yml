@@ -1,0 +1,48 @@
+name: check
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: JavaScript syntax
+        run: for f in robot/web/*.mjs robot/web/*.js; do node --check "$f"; done
+
+      - name: Every language has every text
+        run: |
+          node -e '
+            const vm = require("vm"), fs = require("fs");
+            const ctx = { window: {} };
+            vm.runInNewContext(fs.readFileSync("robot/web/i18n.js", "utf8"), ctx);
+            const I = ctx.window.__robotRadyoI18n, keys = Object.keys(I.en);
+            let bad = 0;
+            for (const l of Object.keys(I.names)) {
+              const miss = keys.filter((k) => !(k in I[l]));
+              const lost = keys.filter((k) => /\{n\}/.test(I.en[k]) && I[l][k] && !/\{n\}/.test(I[l][k]));
+              if (miss.length || lost.length) { bad++; console.log(l, "missing:", miss, "placeholder lost:", lost); }
+            }
+            console.log(Object.keys(I.names).length, "languages,", keys.length, "texts each");
+            process.exit(bad ? 1 : 0);
+          '
+
+      - name: Shell syntax
+        run: |
+          bash -n install.sh
+          bash -n uninstall.sh
+          sh -n robot/web/run.sh
+          sh -n robot/system/S12robotradyo
+
+      - name: ShellCheck (errors only)
+        run: shellcheck -S error install.sh uninstall.sh robot/web/run.sh robot/system/S12robotradyo

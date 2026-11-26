@@ -21,7 +21,8 @@ const AMIXER = path.join(BIN, 'amixer');
 const RATE = 22050;
 const DUCK_LEVEL = 15;           // robot konuşurken "Radyo" kanalı (%), yaklaşık -30 dB
 const RAMP = [35, 60, 80, 100];  // konuşma bitince yavaşça geri açılma
-const RB_UA = 'RobotRadyo/1.0 (Valetudo radio panel)';
+const VERSION = '1.0.0';
+const RB_UA = `RobotRadyo/${VERSION} (Valetudo radio panel)`;
 const LOG_FILE = process.env.LOG_FILE || '/tmp/robot-radyo.log'; // /tmp bellekte durur: boyutu sınırlı tutulur
 const RSS_LIMIT_MB = 100;        // olağan kullanım ~45 MB; bunu aşarsa sunucu kendini yeniden başlatır
 const LOW_MEM_MB = 40;           // robotun kullanılabilir belleği bunun altına inerse radyo kendini kapatır
@@ -63,11 +64,13 @@ async function rbRefreshHosts() {
 async function rb(p) {
   if (Date.now() - rbHostsAt > 6 * 3600e3) await rbRefreshHosts();
   const hosts = [...rbHosts].sort(() => Math.random() - 0.5).slice(0, 3);
-  for (const h of hosts) {
+  if (hosts.length === 1) hosts.push(hosts[0]); // dizinin tek sunucusu varsa, anlık takılmalara karşı bir kez daha dene
+  for (let i = 0; i < hosts.length; i++) {
+    if (i) await new Promise((r) => setTimeout(r, 800));
     try {
-      const r = await fetch(`https://${h}${p}`, { headers: { 'User-Agent': RB_UA }, signal: AbortSignal.timeout(8000) });
+      const r = await fetch(`https://${hosts[i]}${p}`, { headers: { 'User-Agent': RB_UA }, signal: AbortSignal.timeout(8000) });
       if (r.ok) return await r.json();
-    } catch { /* sıradaki sunucu */ }
+    } catch { /* sıradaki deneme */ }
   }
   throw httpError(502, 'Radyo dizinine (radio-browser.info) ulaşılamadı', 'dizin');
 }
@@ -93,11 +96,21 @@ const compact = (s) => ({
   etiketler: String(s.tags || '').split(',').filter(Boolean).slice(0, 3).join(', '), codec: s.codec || '', bitrate: s.bitrate || 0,
   tiklama: s.clickcount || 0, calisiyor: s.lastcheckok === 1, favori: Boolean(findByUuid(s.stationuuid)),
 });
-// Dinlemeye başlanınca radio-browser'a bildirilir (dizinin uygulamalardan istediği "tıklama") ve güncel adres alınır
+// Kullanıcı bir radyoyu dinlemeye başlayınca radio-browser'a bildirilir (dizinin uygulamalardan istediği "tıklama")
+// ve güncel adres alınır. Arka plandaki denemeler ve adres yenileme tıklama saymaz (rbFresh).
 async function rbResolve(uuid) {
   try { const r = await rb(`/json/url/${encodeURIComponent(uuid)}`); return r && r.url ? String(r.url) : null; } catch { return null; }
 }
+async function rbFresh(uuid) {
+  try { const [s] = await rb(`/json/stations/byuuid/${encodeURIComponent(uuid)}`); return s ? String(s.url_resolved || s.url || '') || null : null; } catch { return null; }
+}
 const isUuid = (s) => typeof s === 'string' && /^[0-9a-f-]{36}$/i.test(s);
+// Yalnızca http(s) adresleri çalınır
+const safeUrl = (u) => { try { const x = new URL(String(u || '').trim()); return x.protocol === 'http:' || x.protocol === 'https:' ? x.href : null; } catch { return null; } };
+// ffmpeg yalnızca ağ protokollerini açabilir: yayın listelerinin (ör. HLS) içinden yerel dosya ya da başka protokol açılamaz.
+// (Yetkisiz kullanıcıyla çalıştırmak bu robot yazılımında mümkün değil: ffmpeg rastgele sayı kaynağını açamayıp çöküyor.)
+const FF_SAFE = ['-protocol_whitelist', 'http,https,tls,tcp,crypto'];
+const ffTls = (url) => (url.startsWith('https:') ? ['-ca_file', path.join(BIN, 'cacert.pem'), '-tls_verify', '1'] : []);
 
 // ---------- ülkeye göre hazır başlangıç listesi ----------
 // Dizindeki etiketler dağınık: radyo, etiketlerinin en çok hangi gruba uyduğuna göre gruplanır; eşitlikte bu sıra öncelikli.
@@ -150,7 +163,7 @@ const focused = (s, keys) => {
 // Etiket listesi, kalite bilgisi ve süs karakterleri atılır; TAMAMI BÜYÜK ya da tamamı küçük harfli adlar düzeltilir
 // (kısa kısaltmalar olduğu gibi kalır: FM, TRT, BBC). Çince, Japonca, Arapça gibi harf büyüklüğü olmayan yazılara dokunulmaz.
 const QUALITY = String.raw`(?:mp3|aac\+?|ogg|opus|flac|hls)`;
-const RE_QPAREN = new RegExp(String.raw`\((?=[^)]*(?:\d\s?k(?:bit|bps)?\b|kbps|kbit|mhz|\bhq\b|\bhd\b|\b${QUALITY}\b))[^)]*\)`, 'gi');
+const RE_QPAREN = new RegExp(String.raw`\((?=[^)]*(?:\d\s?k(?:bit|bps)?\b|kbps|kbit|mhz|\b\d{3,4}p\b|\bhq\b|\bhd\b|\b${QUALITY}\b))[^)]*\)`, 'gi');
 const RE_QTAIL = new RegExp(String.raw`(?:[\s-]+${QUALITY})?[\s-]+\d{2,3}\s?k(?:bit\/s|bps)?(?:\s+${QUALITY})?\s*$`, 'i');
 const RE_QWORD = new RegExp(String.raw`\s+${QUALITY}\s*$`, 'i');
 const RE_JUNK = /^[\s#_*~|:,–—-]+|[\s#_*~|:,–—-]+$/g;
@@ -278,10 +291,11 @@ function nextReserve(grup) {
 }
 
 // Yeni eklenen hazır listeyi robotta tek tek dener (ses kartını kullanmadan); çalışmayanın yerine aynı gruptan yenisini koyar
-function probe(url) {
+function probe(rawUrl) {
+  const url = safeUrl(rawUrl);
+  if (!url) return Promise.resolve(false);
   return new Promise((resolve) => {
-    const tls = url.startsWith('https:') ? ['-ca_file', path.join(BIN, 'cacert.pem'), '-tls_verify', '1'] : [];
-    const c = spawn(path.join(BIN, 'ffmpeg'), ['-nostdin', '-hide_banner', '-loglevel', 'error', '-rw_timeout', '10000000', ...tls,
+    const c = spawn(path.join(BIN, 'ffmpeg'), ['-nostdin', '-hide_banner', '-loglevel', 'error', '-rw_timeout', '10000000', ...FF_SAFE, ...ffTls(url),
       '-t', '3', '-i', url, '-vn', '-f', 'null', '-'], { stdio: 'ignore' });
     try { os.setPriority(c.pid, 19); } catch { /* */ }
     const t = setTimeout(() => { try { c.kill('SIGKILL'); } catch { /* */ } }, 25000);
@@ -300,7 +314,7 @@ async function validateLoop() {
       if (!fav) break;
       let good = await probe(fav.url);
       if (!good && fav.uuid) {
-        const fresh = await rbResolve(fav.uuid);
+        const fresh = await rbFresh(fav.uuid);
         if (fresh && fresh !== fav.url) { fav.url = fresh; good = await probe(fresh); }
       }
       const i = favorites.indexOf(fav);
@@ -319,17 +333,21 @@ async function validateLoop() {
 }
 
 // ---------- ayarlar ----------
-const settings = { istasyon: favorites[0]?.id ?? null, ses: 60, sessiz: false, otomatik: false, ulke: null, kurulum: false };
+// zamanli: Valetudo'nun zamanlayıcısıyla başlayan temizliklerde de otomatik çalsın mı (varsayılan: hayır, ev boş olabilir)
+const settings = { istasyon: favorites[0]?.id ?? null, ses: 60, sessiz: false, otomatik: false, zamanli: false, ulke: null, kurulum: false };
 try { Object.assign(settings, JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8'))); } catch { /* ilk çalıştırma */ }
 if (!findFavorite(settings.istasyon)) settings.istasyon = favorites[0]?.id ?? null;
 let saveTimer = null;
 function saveSettings() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => { try { fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings)); } catch (e) { log('ayar yazılamadı', e.message); } }, 800);
+  saveTimer = setTimeout(() => {
+    try { fs.writeFileSync(SETTINGS_FILE + '.tmp', JSON.stringify(settings)); fs.renameSync(SETTINGS_FILE + '.tmp', SETTINGS_FILE); }
+    catch (e) { log('ayar yazılamadı', e.message); }
+  }, 800);
 }
 
 // ---------- radyo ----------
-const radio = { playing: false, station: null, title: '', error: '', errorKod: '', since: 0, withCleaning: false, restarts: 0, pipe: null, timer: null };
+const radio = { playing: false, station: null, title: '', error: '', errorKod: '', since: 0, withCleaning: false, restartTimes: [], pipe: null, timer: null };
 
 // Ses ayarı ses kartının hemen önündeki "Radyo Ses" kanalıyla yapılır (anında etki eder).
 // Kanal -60..0 dB; kulağa doğal gelsin diye ayar = 40·log10(ses/100) dB.
@@ -367,9 +385,8 @@ function warmUpControls() {
   return new Promise((resolve) => {
     const c = spawn(path.join(BIN, 'aplay'), ['-q', '-D', 'radyo', '-t', 'raw', '-f', 'S16_LE', '-r', String(RATE), '-c', '1'],
       { stdio: ['pipe', 'ignore', 'ignore'] });
-    const done = () => { warmedUp = true; resolve(); };
-    c.on('close', done);
-    c.on('error', done);
+    c.on('close', (code) => { if (code === 0) warmedUp = true; resolve(); });
+    c.on('error', () => resolve());
     c.stdin.on('error', () => {});
     c.stdin.end(Buffer.alloc(Math.round(RATE / 10) * 2)); // 0,1 sn sessizlik
     setTimeout(() => { try { c.kill('SIGKILL'); } catch { /* */ } }, 5000);
@@ -397,23 +414,25 @@ function startRadio(target, withCleaning = false) {
   if (!st || (!st.url && !st.uuid)) throw httpError(400, 'Bilinmeyen radyo', 'yok');
   return serial(async () => {
     clearTimeout(radio.timer); radio.timer = null;
-    Object.assign(radio, { playing: true, station: st, title: '', error: '', errorKod: '', since: Date.now(), withCleaning, restarts: 0, healed: false });
+    Object.assign(radio, { playing: true, station: st, title: '', error: '', errorKod: '', since: Date.now(), withCleaning, restartTimes: [], healed: false });
     duck.errorStop = false;
     if (findFavorite(st.id)) { settings.istasyon = st.id; saveSettings(); }
     saveRuntime();
-    if (!st.url && st.uuid) st.url = await rbResolve(st.uuid);
+    let clicked = false;
+    if (!st.url && st.uuid) { st.url = await rbResolve(st.uuid); clicked = true; }
     if (!st.url) { radio.playing = false; radio.error = 'Yayın adresi bulunamadı'; radio.errorKod = 'baglanti'; saveRuntime(); return; }
     await spawnPipe();
     log('radyo açıldı:', st.ad, withCleaning ? '(temizlikle)' : '', findFavorite(st.id) ? '' : '(önizleme)');
-    if (st.uuid) rbResolve(st.uuid); // radio-browser'a "dinlendi" bildirimi
+    if (st.uuid && !clicked) rbResolve(st.uuid); // radio-browser'a "dinlendi" bildirimi (bir kez)
   });
 }
 
+// Hata gösterecek çağıranlar hata metnini stopRadio'dan SONRA yazar; normal kapanışta eski hata temizlenir
 function stopRadio(reason = '') {
   clearTimeout(radio.timer); radio.timer = null;
   if (radio.playing) log('radyo kapandı', reason ? `(${reason})` : '');
   radio.playing = false; radio.withCleaning = false; radio.title = '';
-  if (reason === 'kullanıcı') { radio.error = ''; radio.errorKod = ''; }
+  radio.error = ''; radio.errorKod = '';
   duck.errorStop = false;
   saveRuntime();
   return serial(() => killPipe());
@@ -445,10 +464,12 @@ async function spawnPipe() {
   if (!radio.playing) return;
   if (!warmedUp) await warmUpControls();
   const st = radio.station;
-  const tls = st.url.startsWith('https:') ? ['-ca_file', path.join(BIN, 'cacert.pem'), '-tls_verify', '1'] : [];
+  const url = safeUrl(st.url);
+  if (!url) { stopRadio('geçersiz adres'); radio.error = 'Geçersiz yayın adresi'; radio.errorKod = 'baglanti'; return; }
   const ff = spawn(path.join(BIN, 'ffmpeg'), ['-nostdin', '-hide_banner', '-nostats', '-loglevel', 'info',
     '-reconnect', '1', '-reconnect_streamed', '1', '-reconnect_on_network_error', '1', '-reconnect_delay_max', '10', '-rw_timeout', '15000000',
-    ...tls, '-i', st.url, '-vn', '-ac', '1', '-ar', String(RATE), '-f', 's16le', 'pipe:1'], { stdio: ['ignore', 'pipe', 'pipe'] });
+    ...FF_SAFE, ...ffTls(url), '-i', url, '-vn', '-ac', '1', '-ar', String(RATE), '-f', 's16le', 'pipe:1'],
+  { stdio: ['ignore', 'pipe', 'pipe'] });
   // "radyo" cihazı /etc/asound.conf içinde: robotla paylaşılan karıştırıcı + kısılabilen "Radyo" kanalı.
   // Ses verisi ffmpeg'den aplay'e doğrudan akar, node'un içinden geçmez (işlemciyi yormamak için).
   let ap;
@@ -478,7 +499,10 @@ async function spawnPipe() {
     const lines = lineBuf.split(/\r?\n|\r/);
     lineBuf = lines.pop();
     for (const line of lines) {
-      if (/^(Output #0|Stream mapping)/.test(line)) p.gotAudio = true; // yayın açıldı, ses akmaya başlıyor
+      if (/^(Output #0|Stream mapping)/.test(line)) { // yayın açıldı, ses akmaya başlıyor
+        p.gotAudio = true;
+        if (!radio.errorKod) radio.error = ''; // kısa kesintiden sonra yeniden bağlandı
+      }
       const m = line.match(/StreamTitle\s*:\s*(.*)$/);
       if (m) radio.title = m[1].trim().replace(/^'|';?$/g, '').slice(0, 120);
       if (/error|failed|refused|not found|forbidden|timed out/i.test(line)) errTail = line.trim().slice(0, 160);
@@ -488,7 +512,10 @@ async function spawnPipe() {
 
   const onExit = (who) => () => {
     if (p.dead || radio.pipe !== p || !radio.playing) return;
-    radio.restarts += p.gotAudio ? 0 : 1;
+    p.dead = true; // ffmpeg ve aplay aynı kesinti için iki kez haber verir: bir kez ele al
+    const now = Date.now();
+    radio.restartTimes = radio.restartTimes.filter((t) => now - t < 120000);
+    radio.restartTimes.push(now);
     radio.error = errTail || `${who} durdu`; radio.errorKod = '';
     log('yayın kesildi:', radio.station.ad, '-', radio.error);
     // Yayın hiç açılmadıysa adres değişmiş olabilir: radio-browser'dan güncel adresi alıp bir kez onu dene
@@ -497,7 +524,7 @@ async function spawnPipe() {
       const st = radio.station;
       serial(async () => {
         await killPipe();
-        const fresh = await rbResolve(st.uuid);
+        const fresh = await rbFresh(st.uuid);
         if (fresh && fresh !== st.url) {
           log('yayın adresi değişmiş, yenisi deneniyor:', st.ad);
           st.url = fresh;
@@ -507,10 +534,17 @@ async function spawnPipe() {
       });
       return;
     }
-    if (radio.restarts > 5) { radio.error = 'Yayına bağlanılamıyor: ' + radio.error; radio.errorKod = 'baglanti'; stopRadio('bağlanılamadı'); return; }
+    // 2 dakikada 5'ten fazla kesinti (ör. biten bir kayıt ya da kapanmış yayın): sonsuza kadar denemek yerine dur
+    if (radio.restartTimes.length > 5) {
+      const why = radio.error;
+      stopRadio('bağlanılamadı');
+      radio.error = 'Yayına bağlanılamıyor: ' + why; radio.errorKod = 'baglanti';
+      return;
+    }
     serial(() => killPipe());
     clearTimeout(radio.timer);
-    radio.timer = setTimeout(() => { if (radio.playing) serial(() => spawnPipe()); }, 3000);
+    const wait = Math.min(30000, 3000 * radio.restartTimes.length); // her kesintide biraz daha uzun bekle
+    radio.timer = setTimeout(() => { if (radio.playing) serial(() => spawnPipe()); }, wait);
   };
   ff.on('close', onExit('ffmpeg'));
   ap.on('close', onExit('aplay'));
@@ -603,10 +637,30 @@ function errorStopNow() {
 }
 
 // ---------- temizlikte otomatik radyo, istasyona varınca ve hata olunca kapatma ----------
-// Robotun durumu Valetudo'dan okunur (temizliyor / dönüyor / istasyonda / hata). Bunun için Valetudo'nun
-// 8080 üzerinden en az bir kez açılmış olması gerekir; oturum bilgisi yalnızca bellekte tutulur.
+// Robotun durumu Valetudo'dan okunur (temizliyor / dönüyor / istasyonda / hata). Valetudo'nun girişi kapalıysa
+// (Valetudo'nun varsayılanı) doğrudan, hemen; açıksa sayfayı 8080'den açan tarayıcının gönderdiği girişle.
+// Şifre hiçbir yerden okunmaz; tarayıcının gönderdiği giriş yalnızca bellekte tutulur ve yalnızca 127.0.0.1'e gider.
 let lastAuth = null;
 let robotStatus = null;
+let tracking = false;   // robotun durumu şu an okunabiliyor mu
+let authWaitUntil = 0;  // girişsiz okuma reddedildiyse bir dakika bekle (Valetudo'yu boş yere yorma)
+let seenOnce = false;
+// Valetudo'nun zamanlayıcıları UTC saatiyle, dakikası dakikasına çalışır (Pazar = 0). Temizlik bir zamanlayıcının
+// dakikasında (ya da en fazla 3 dakika sonra) başladıysa zamanlanmış sayılır.
+async function scheduledCleaning(auth) {
+  try {
+    const timers = await valetudo('GET', '/api/v2/timers', auth);
+    const now = Date.now();
+    for (const t of Object.values(timers || {})) {
+      if (!t || !t.enabled || !Array.isArray(t.dow)) continue;
+      for (let back = 0; back <= 3; back++) {
+        const d = new Date(now - back * 60000);
+        if (t.dow.includes(d.getUTCDay()) && t.hour === d.getUTCHours() && t.minute === d.getUTCMinutes()) return true;
+      }
+    }
+  } catch { /* zamanlayıcılar okunamadı: elle başlatılmış say */ }
+  return false;
+}
 
 const AWAY = ['cleaning', 'returning', 'moving', 'paused', 'manual_control'];
 // Başlangıçta robot istasyonda varsayılır: sunucu yeni açıldıktan sonra ilk görülen "temizliyor" yeni temizlik sayılır
@@ -629,17 +683,31 @@ export function makeRobotTracker(initial = 'docked') {
 const robotTracker = makeRobotTracker();
 
 async function pollRobot() {
-  if (!lastAuth) return;
+  if (!lastAuth && Date.now() < authWaitUntil) return;
+  const auth = lastAuth || undefined;
   let st;
   try {
-    const attrs = await valetudo('GET', '/api/v2/robot/state/attributes', lastAuth);
+    const attrs = await valetudo('GET', '/api/v2/robot/state/attributes', auth);
     st = (Array.isArray(attrs) ? attrs : []).find((a) => a.__class === 'StatusStateAttribute')?.value ?? null;
-  } catch (e) { if (e.status === 401) lastAuth = null; return; }
+  } catch (e) {
+    tracking = false;
+    if (e.status === 401) { if (auth) lastAuth = null; else authWaitUntil = Date.now() + 60000; }
+    return;
+  }
+  tracking = true;
   robotStatus = st;
-  for (const ev of robotTracker(st)) {
+  const events = robotTracker(st);
+  // Girişsiz Valetudo'da durum sunucu açılır açılmaz okunur: ilk okuma başlangıç durumudur, olay sayılmaz
+  // (sunucu temizlik sırasında yeniden başlarsa radyo kendiliğinden açılmasın)
+  if (!seenOnce) { seenOnce = true; if (!auth) return; }
+  for (const ev of events) {
     if (ev === 'temizlik-basladi') {
-      log('temizlik başladı');
-      if (settings.otomatik && !radio.playing) startRadio(settings.istasyon, true).catch(() => {});
+      if (!settings.otomatik || radio.playing) { log('temizlik başladı'); continue; }
+      // Zamanlanmış temizlikte ev çoğu zaman boştur: radyo yalnızca kullanıcı izin verdiyse açılır
+      const planned = await scheduledCleaning(auth);
+      if (planned && !settings.zamanli) { log('zamanlanmış temizlik başladı: radyo kendiliğinden açılmadı'); continue; }
+      log('temizlik başladı' + (planned ? ' (zamanlanmış)' : ''));
+      startRadio(settings.istasyon, true).catch(() => {});
     } else if (ev === 'hata') {
       log('robot hata verdi' + (radio.playing ? ': uyarısını söyledikten sonra radyo kapanacak' : ''));
       if (radio.playing && !duck.errorStop) { duck.errorStop = true; duck.errorSince = Date.now(); }
@@ -750,7 +818,11 @@ async function authorized(req) {
     if (authCache.size > 20) for (const [k, v] of authCache) if (v <= Date.now()) authCache.delete(k);
     if (h) lastAuth = h;
     return true;
-  } catch { return false; }
+  } catch (e) {
+    if (e.status === 401) { authCache.delete(key); return false; }
+    if (exp) return true; // Valetudo anlık yanıt vermiyor: kısa süre önce doğrulanmış girişi kabul et (radyo durdurulabilsin)
+    throw httpError(503, 'Valetudo yanıt vermiyor', 'valetudo');
+  }
 }
 const isLocal = (req) => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress);
 // Valetudo'daki "yalnızca ev ağından erişim" kuralının aynısı
@@ -780,8 +852,8 @@ function state() {
       onizleme: Boolean(radio.station && !findFavorite(radio.station.id)), uuid: radio.station?.uuid ?? null },
     ses: settings.ses, sessiz: settings.sessiz, otomatik: settings.otomatik, ulke: settings.ulke, robotDurumu: robotStatus,
     kurulum: Boolean(settings.kurulum || favorites.length), kontrolBekleyen: favorites.filter((f) => f.kontrol === 'bekliyor').length,
-    istasyonda: robotStatus ? robotStatus === 'docked' : null, durumTakibi: Boolean(lastAuth),
-    kaynak: usage,
+    istasyonda: robotStatus ? robotStatus === 'docked' : null, durumTakibi: tracking, otomatikZamanli: Boolean(settings.zamanli),
+    kaynak: usage, surum: VERSION,
   };
 }
 
@@ -799,14 +871,32 @@ const PREVIEW = `<!doctype html><html><head><meta charset="utf-8"><meta name="vi
 <title>Robot Radyo</title><style>body{margin:0;min-height:100vh;font:16px system-ui;background:#1e1e1e;color:#ddd;display:grid;place-items:center}</style></head>
 <body><p>Robot Radyo &rarr;</p>${SCRIPT_TAGS}</body></html>`;
 
+// Başka bir sitenin, ev ağındaki bir tarayıcı üzerinden radyoyu yönetmesini engeller (CSRF): değişiklik yapan istekler
+// yalnızca JSON olarak ve aynı sayfadan kabul edilir (panel zaten böyle gönderir).
+function assertSameSite(req) {
+  if (!String(req.headers['content-type'] || '').toLowerCase().startsWith('application/json')) throw httpError(415, 'JSON bekleniyor');
+  const site = req.headers['sec-fetch-site'];
+  if (site && site !== 'same-origin' && site !== 'none') throw httpError(403, 'Başka bir siteden gelen istek reddedildi');
+  const origin = req.headers.origin;
+  if (origin) {
+    let host = null;
+    try { host = new URL(origin).host; } catch { /* "null" ya da bozuk */ }
+    if (host !== req.headers.host) throw httpError(403, 'Başka bir siteden gelen istek reddedildi');
+  }
+}
+
 async function handleRadyo(req, res, p) {
   if (req.method === 'GET' && p === '/robot-radyo/panel.js') return sendScript(req, res, 'panel.js');
   if (req.method === 'GET' && p === '/robot-radyo/i18n.js') return sendScript(req, res, 'i18n.js');
+  if (req.method === 'POST') assertSameSite(req);
+  // Buradan sonrası Valetudo girişi ister (robotun içinden gelen istekler hariç)
+  if (!(isLocal(req) || await authorized(req))) return send(res, 401, { hata: 'Giriş gerekli' });
+
   if (req.method === 'GET' && p === '/robot-radyo/onizleme') return send(res, 200, PREVIEW);
   if (req.method === 'GET' && p === '/robot-radyo/api/radyolar') {
     return send(res, 200, favorites.map(({ id, ad, grup, grupKey, uuid }) => ({ id, ad, grup: grup || null, grupKey: grupKey || null, dizinde: Boolean(uuid) })));
   }
-  // Radyo dizininde arama (ev ağına açık; özel bilgi içermez)
+  // Radyo dizininde arama
   if (req.method === 'GET' && p === '/robot-radyo/api/ara') {
     const u = new URL(req.url, 'http://x').searchParams;
     const q = new URLSearchParams({ hidebroken: 'true', order: 'clickcount', reverse: 'true', limit: '60' });
@@ -824,9 +914,6 @@ async function handleRadyo(req, res, p) {
     return send(res, 200, list.filter((c) => c.iso_3166_1 && c.stationcount > 0)
       .map((c) => ({ kod: c.iso_3166_1, ad: c.name, sayi: c.stationcount })));
   }
-
-  if (!(isLocal(req) || await authorized(req))) return send(res, 401, { hata: 'Giriş gerekli' });
-
   if (req.method === 'GET' && p === '/robot-radyo/api/durum') return send(res, 200, state());
   if (req.method === 'POST' && p === '/robot-radyo/api/radyo/cal') {
     const b = await readJson(req);
@@ -890,7 +977,7 @@ async function handleRadyo(req, res, p) {
     if (!findFavorite(settings.istasyon)) settings.istasyon = favorites[0]?.id ?? null;
     saveSettings();
     log(`hazır liste (${ulke || 'tüm ülkeler'}, ${mode}): ${list.length} radyo`);
-    validateLoop();
+    validateLoop().catch((e) => log('hazır liste denenemedi:', e.message));
     return send(res, 200, { tamam: true, eklenen: list.length });
   }
   if (req.method === 'POST' && p === '/robot-radyo/api/ulke') {
@@ -912,8 +999,11 @@ async function handleRadyo(req, res, p) {
     return send(res, 200, state());
   }
   if (req.method === 'POST' && p === '/robot-radyo/api/otomatik') {
-    settings.otomatik = Boolean((await readJson(req)).acik); saveSettings();
-    log('temizlikte otomatik radyo:', settings.otomatik ? 'açık' : 'kapalı');
+    const b = await readJson(req);
+    if ('acik' in b) settings.otomatik = Boolean(b.acik);
+    if ('zamanli' in b) settings.zamanli = Boolean(b.zamanli);
+    saveSettings();
+    log('temizlikte otomatik radyo:', settings.otomatik ? 'açık' : 'kapalı', '| zamanlanmış temizliklerde:', settings.zamanli ? 'açık' : 'kapalı');
     return send(res, 200, state());
   }
   return send(res, 404, { hata: 'Bulunamadı' });
@@ -972,12 +1062,34 @@ const server = http.createServer((req, res) => {
   }
   proxy(req, res);
 });
+// Önceki çalıştırmadan sahipsiz kalmış ffmpeg (sunucu aniden kapandıysa çalmaya devam eder ve durdurulamaz).
+// Yalnızca bu kurulumun ffmpeg'i ve yalnızca sahipsiz olanlar (üst süreci 1): başka bir örneğin çalan radyosuna dokunmaz.
+// ffmpeg kapanınca ona bağlı aplay de kendiliğinden biter.
+function killOrphans() {
+  const ff = path.join(BIN, 'ffmpeg');
+  for (const d of fs.readdirSync('/proc')) {
+    if (!/^\d+$/.test(d)) continue;
+    try {
+      if (fs.readlinkSync(`/proc/${d}/exe`) !== ff) continue;
+      const stat = fs.readFileSync(`/proc/${d}/stat`, 'utf8');
+      if (stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1] !== '1') continue;
+      process.kill(Number(d), 'SIGKILL');
+      log('önceki çalıştırmadan kalan ses süreci kapatıldı:', d);
+    } catch { /* süreç yok ya da bizim değil */ }
+  }
+}
+process.on('unhandledRejection', (e) => log('beklenmeyen hata:', e?.message || e));
 server.requestTimeout = 0;
+server.on('error', (e) => {
+  log('sunucu başlatılamadı:', e.code === 'EADDRINUSE' ? `${PORT} portu başka bir program tarafından kullanılıyor` : e.message);
+  process.exit(1);
+});
 server.listen(PORT, '0.0.0.0', async () => {
   if (!fs.existsSync(FAV_FILE) && favorites.length) { try { saveFavorites(); } catch { /* */ } }
   trimLog();
-  log(`Robot Radyo hazır: http://0.0.0.0:${PORT}  (${favorites.length} favori radyo)`);
-  if (favorites.some((f) => f.kontrol === 'bekliyor')) setTimeout(validateLoop, 20000); // yarım kalan denemeyi sürdür
+  killOrphans();
+  log(`Robot Radyo ${VERSION} hazır: http://0.0.0.0:${PORT}  (${favorites.length} favori radyo)`);
+  if (favorites.some((f) => f.kontrol === 'bekliyor')) setTimeout(() => validateLoop().catch(() => {}), 20000); // yarım kalan denemeyi sürdür
   await warmUpControls();
   applyVolume();
   setRadioChannel(100);
