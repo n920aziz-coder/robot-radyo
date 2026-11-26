@@ -194,7 +194,7 @@ The robot always comes first:
 
 English, Türkçe, Deutsch, Français, Español, Italiano, Português, Nederlands, Polski, Русский, Українська, العربية, 中文, 日本語, 한국어. The panel follows the browser language, and you can switch it in the panel.
 
-English and Turkish are the project's original languages. The other 13 translations were written carefully with AI assistance, specifically for this interface, but no native speaker has reviewed them yet. Corrections are very welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). All texts are in `robot/web/i18n.js`.
+English and Turkish are the project's original languages. The other 13 translations were written carefully with Claude, specifically for this interface, but no native speaker has reviewed them yet. Corrections are very welcome; see [CONTRIBUTING.md](CONTRIBUTING.md). All texts are in `robot/web/i18n.js`.
 
 ## Porting to other robots
 
@@ -215,6 +215,10 @@ Pull requests for other models are welcome.
 The code comments are mostly in Turkish. Issues and pull requests are welcome in English or Turkish.
 
 ## Credits
+
+Robot Radyo was built with [Claude](https://claude.ai) (Anthropic's AI assistant) and tested on my own robot.
+
+Thanks to:
 
 [radio-browser.info](https://www.radio-browser.info) · [Valetudo](https://valetudo.cloud) · [ffmpeg](https://ffmpeg.org) static builds by John Van Sickle · [yao-pkg/pkg-fetch](https://github.com/yao-pkg/pkg-fetch) static Node.js builds · ALSA / alsa-utils
 

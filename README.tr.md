@@ -194,7 +194,7 @@ Robot her zaman önce gelir:
 
 English, Türkçe, Deutsch, Français, Español, Italiano, Português, Nederlands, Polski, Русский, Українська, العربية, 中文, 日本語, 한국어. Panel tarayıcının dilini kullanır; dili panelden de değiştirebilirsiniz.
 
-Projenin asıl dilleri Türkçe ve İngilizcedir. Diğer 13 dilin çevirileri yapay zekâ yardımıyla, bu arayüz için özenle yazıldı; ama henüz o dili ana dili olarak konuşan biri tarafından kontrol edilmedi. Düzeltmeler memnuniyetle karşılanır; [CONTRIBUTING.md](CONTRIBUTING.md) dosyasına bakın. Bütün metinler `robot/web/i18n.js` dosyasında.
+Projenin asıl dilleri Türkçe ve İngilizcedir. Diğer 13 dilin çevirileri Claude yardımıyla, bu arayüz için özenle yazıldı; ama henüz o dili ana dili olarak konuşan biri tarafından kontrol edilmedi. Düzeltmeler memnuniyetle karşılanır; [CONTRIBUTING.md](CONTRIBUTING.md) dosyasına bakın. Bütün metinler `robot/web/i18n.js` dosyasında.
 
 ## Başka robotlara uyarlama
 
@@ -215,6 +215,10 @@ Başka modeller için katkılar (pull request) memnuniyetle karşılanır.
 Koddaki açıklamalar çoğunlukla Türkçedir. Hata bildirimleri ve katkılar Türkçe ya da İngilizce olabilir.
 
 ## Teşekkürler
+
+Robot Radyo, [Claude](https://claude.ai) (Anthropic'in yapay zekâ asistanı) ile yapıldı ve kendi robotumda denendi.
+
+Katkısı olanlar:
 
 [radio-browser.info](https://www.radio-browser.info) · [Valetudo](https://valetudo.cloud) · John Van Sickle'ın [ffmpeg](https://ffmpeg.org) statik derlemeleri · [yao-pkg/pkg-fetch](https://github.com/yao-pkg/pkg-fetch) statik Node.js derlemeleri · ALSA / alsa-utils
 
