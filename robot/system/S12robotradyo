@@ -1,0 +1,25 @@
+#!/bin/sh
+# Robot Radyo - started at boot by /etc/init/rcS (Roborock gen1/gen2 firmware).
+# Installed by install.sh; @DIR@ is replaced with the installation directory.
+DIR=@DIR@
+PID=/var/run/robot-radyo.pid
+
+case "$1" in
+    start)
+        echo "starting robot-radyo"
+        start-stop-daemon -S -b -q -m -p $PID -x /bin/sh -- $DIR/web/run.sh
+        ;;
+    stop)
+        echo "stopping robot-radyo"
+        start-stop-daemon -K -q -p $PID
+        rm -f $PID
+        ;;
+    restart)
+        $0 stop
+        sleep 2
+        $0 start
+        ;;
+    *)
+        echo "$0 <start|stop|restart>"
+        ;;
+esac

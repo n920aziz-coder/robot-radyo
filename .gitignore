@@ -1,0 +1,7 @@
+# Robot Radyo: robota özel, kişisel dosyalar depoya girmesin / personal files that must not be committed
+ayarlar.json
+favoriler.json
+favoriler.json.tmp
+radyolar.json
+*.log
+node_modules/
